@@ -1,0 +1,61 @@
+# Ruolo e Obiettivo
+Agisci come un esperto sviluppatore Full-Stack Python ed esperto di interfacce web/UX.
+Il tuo obiettivo è creare da zero una **Web App locale** che permetta di:
+1. Caricare un documento Word (.docx).
+2. Scegliere un modello LLM locale (tramite Ollama) per assistere la conversione o descrivere elementi complessi (es. immagini).
+3. Convertire il documento in formato Markdown (.md).
+4. Analizzare la struttura gerarchica combinata di **Titoli (#, ##, ###)** ed **Elenchi Puntati/Numerati** per generare un diagramma ad albero in stile **Mermaid**.
+5. Mostrare a schermo sia il codice Markdown che il **rendering grafico interattivo del diagramma**.
+6. Permettere il download del diagramma sia in formato sorgente (`.mmd`) sia come **pagina HTML interattiva standalone**.
+
+# Contesto Tecnico e Dipendenze
+- **Sistema Operativo:** Windows
+- **Framework UI obbligatorio:** Streamlit (sfruttando la funzione nativa `st.mermaid_chart` per il rendering).
+- **Integrazione LLM Locale:** Interfaccia API di Ollama (attivo di default su `http://localhost:11434`).
+- **Librerie già installate sul PC:** `markitdown`, `magika`, `markdownify`, `streamlit`, `requests` (o la libreria `ollama`).
+- **Vincolo stringente:** Non installare pacchetti esterni aggiuntivi. Sfrutta moduli della Standard Library per la manipolazione del testo e la generazione dell'HTML.
+
+---
+
+# Fasi di Esecuzione
+
+### Fase 1: Struttura dell'Interfaccia Utente e Integrazione Ollama (UX/UI)
+1. Esamina attentamente il file `docx_to_markdown_webapp.py` situato nella cartella `C:\Progetto_AI\APP_MarkDown\`.
+2. Identifica il framework UI utilizzato (es. Streamlit, Gradio, o Custom HTML/CSS con Flask/FastAPI).
+3. Analizza e isola le componenti di design: la palette di colori (es. tema scuro/cyber/secure), i fogli di stile CSS personalizzati, il layout dei componenti e i font per usarli come base visiva coerente per la nuova Web App.
+
+- **Funzionalità Sidebar:** 
+  - Crea una funzione che interroghi l'API locale di Ollama (`http://localhost:11434/api/tags`) all'avvio dell'app per recuperare l'elenco dei modelli effettivamente installati sul PC dell'utente (es. `llama3`, `mistral`, `llava`, `phi3`).
+  - Mostra una scatola di selezione (`st.sidebar.selectbox`) per permettere all'utente di scegliere quale modello LLM locale utilizzare. Se Ollama non è raggiungibile, mostra un avviso aggraziato e disabilita le funzioni LLM procedendo in modalità "solo parser locale".
+
+### Fase 2: Motore di Conversione ed Estrazione Avanzata
+1. **Word -> Markdown (con supporto LLM facoltativo):** Converti il file inserito tramite `markitdown`. Se l'utente seleziona un modello LLM e il file Word contiene immagini, configura l'oggetto `MarkItDown` per passare le immagini a Ollama (sfruttando il client compatibile OpenAI fornito da MarkItDown puntato su `http://localhost:11434/v1`) per estrarne le descrizioni testuali.
+2. **Parser Markdown -> Mermaid (`graph TD`):** Sviluppa una funzione di parsing robusta che analizzi il testo riga per riga:
+   - Deve mappare i **Titoli** (tracciando i livelli con uno stack per creare i collegamenti genitore -> figlio).
+   - Deve catturare gli **Elenchi Puntati** (`-`, `*`) e **Numerati** (`1.`, `2.`), calcolandone l'indentazione o il livello di annidamento per agganciarli correttamente come nodi foglia sotto l'ultimo titolo o sotto-elemento attivo.
+   - Sfrutta l'LLM locale selezionato come sistema di "fallback/validazione": invia la stringa Mermaid generata all'LLM con un prompt di sistema stringente per verificare che non ci siano errori di sintassi e correggerli al volo prima del rendering.
+   - Pulisci accuratamente le stringhe di testo rimuovendo caratteri speciali destabilizzanti per Mermaid.
+
+### Fase 3: Visualizzazione e Opzioni di Esportazione
+Una volta completata l'elaborazione, l'interfaccia principale deve mostrare:
+- **Tab 1: Testo Markdown:** L'anteprima del testo Markdown convertito dal file Word (inclusi gli alt-text delle immagini generati dall'LLM, se presenti).
+- **Tab 2: Diagramma Grafico:**
+  - Il rendering del diagramma interattivo in tempo reale usando `st.mermaid_chart()`.
+  - Un box espandibile (`st.expander`) contenente il codice Mermaid generato e corretto.
+- **Sezione Download:** Inserisci tre pulsanti di download distinti:
+  1. Scarica il file Markdown (`.md`).
+  2. Scarica il codice del diagramma (`.mmd`).
+  3. **Scarica Diagramma in HTML:** Genera una stringa HTML standalone che includa il codice Mermaid racchiuso nel tag `<pre class="mermaid">` e che richiami lo script tramite CDN ufficiale (`https://jsdelivr.net`) impostando `mermaid.initialize({startOnLoad:true})`. 
+
+### Fase 4: Implementazione del Codice
+- Genera il codice sorgente completo in un unico file chiamato `word_to_mermaid_llm_ultimate.py`.
+- Il codice deve essere interamente commentato in italiano, modulare, solido, pronto per la produzione e senza interruzioni o placeholder.
+- Gestisci la conversione dei file interamente in memoria (usando stringhe o flussi di byte) senza salvare file temporanei sul disco fisso di Windows.
+
+### Fase 5: Esecuzione e Collaudo
+1. Crea il file `word_to_mermaid_llm_ultimate.py` nel workspace locale.
+2. Assicurati che Ollama sia avviato in background sul PC.
+3. Avvia l'applicazione digitando nel terminale di Antigravity: `streamlit run word_to_mermaid_llm_ultimate.py`.
+4. Scegli un modello dalla sidebar, carica un file Word di prova e testa l'intero flusso di generazione del grafico.
+5. Verifica il corretto rendering dell'interfaccia nel browser e testa il flusso di conversione (caricamento, elaborazione, anteprima e download) per assicurarti che non ci siano errori di runtime.
+
