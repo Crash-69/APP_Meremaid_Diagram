@@ -17,6 +17,7 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree
 
 import streamlit as st
+from markdown_it import MarkdownIt
 
 try:
     from markitdown import MarkItDown, StreamInfo
@@ -365,11 +366,120 @@ def convert_markdown(content: bytes) -> str:
     return markdown if markdown.endswith("\n") else markdown + "\n"
 
 
+def extract_flow_section(markdown: str) -> str:
+    """Estrae la sezione richiesta usando i confini dei blocchi Markdown."""
+    tokens = MarkdownIt().parse(markdown)
+    blocks = []
+    for index, token in enumerate(tokens):
+        if token.level != 0 or token.type not in {"heading_open", "paragraph_open"}:
+            continue
+        inline = tokens[index + 1]
+        if inline.type != "inline" or token.map is None:
+            continue
+        title = "".join(child.content for child in inline.children or []
+                        if child.type in {"text", "code_inline"})
+        title = re.sub(r"^\s*\d+(?:\.\d+)*[.)]?\s+", "", title)
+        title = " ".join(title.split()).casefold()
+        children = [child for child in inline.children or []
+                if child.type != "text" or child.content.strip()]
+        emphasized = bool(children and children[0].type == "strong_open"
+                          and children[-1].type == "strong_close")
+        blocks.append((token, title, emphasized))
+
+    matches = [index for index, (_, title, _) in enumerate(blocks)
+               if title == "diagramma di flusso"]
+    if len(matches) != 1:
+        raise ValueError(
+            'La sezione "Diagramma di Flusso" non e presente o non e univoca. '
+            'Usa un solo titolo dedicato nel documento.'
+        )
+    start_index = matches[0]
+    start = blocks[start_index][0]
+    start_level = int(start.tag[1:]) if start.type == "heading_open" else None
+    lines = markdown.splitlines(keepends=True)
+    end_line = len(lines)
+    for token, _, emphasized in blocks[start_index + 1:]:
+        if token.type == "heading_open":
+            if start_level is None or int(token.tag[1:]) <= start_level:
+                end_line = token.map[0]
+                break
+        elif start_level is None and emphasized:
+            end_line = token.map[0]
+            break
+    section = "".join(lines[start.map[0]:end_line]).strip()
+    content = "".join(lines[start.map[1]:end_line]).strip()
+    if not content:
+        raise ValueError('La sezione "Diagramma di Flusso" non contiene testo.')
+    if start_level is None:
+        section = "## Diagramma di Flusso\n\n" + content
+    return section + "\n"
+
+
 def _mermaid_label(value: str) -> str:
     """Pulisce caratteri di controllo e codifica le etichette per Mermaid."""
     value = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", value)
     value = re.sub(r"\s+", " ", value).strip() or "(elemento senza testo)"
     return html.escape(value, quote=True)
+
+
+def _parse_ascii_flow(text: str) -> tuple[list[str], list[tuple[int, int]]] | None:
+    """Legge sequenze verticali e rami laterali espliciti, senza inferire la prosa."""
+    labels: list[str] = []
+    edges: list[tuple[int, int]] = []
+    terminals: dict[str, int] = {}
+    current = None
+    connector = False
+    downward = False
+
+    def add_node(label: str) -> int:
+        terminal = label.casefold()
+        if terminal in {"fine", "end", "stop"}:
+            if terminal in terminals:
+                return terminals[terminal]
+            terminals[terminal] = len(labels)
+        labels.append(label)
+        return len(labels) - 1
+
+    for line in text.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        if value == "|":
+            if current is None:
+                return None
+            connector = True
+            continue
+        if value in {"V", "v"}:
+            if not connector:
+                return None
+            downward = True
+            continue
+        branch = re.fullmatch(r"\+--+>\s*(.+)", value)
+        if branch:
+            if current is None or not connector:
+                return None
+            parts = re.split(r"\s*--+>\s*", branch.group(1))
+            if any(not part.strip() for part in parts):
+                return None
+            parent = current
+            for part in parts:
+                node = add_node(part.strip())
+                edges.append((parent, node))
+                parent = node
+            continue
+        if "-->" in value or value.startswith(("|", "+")):
+            return None
+        if current is not None and not downward:
+            return None
+        node = add_node(value)
+        if current is not None:
+            edges.append((current, node))
+        current = node
+        connector = False
+        downward = False
+    if len(labels) < 2 or not edges or connector or downward:
+        return None
+    return labels, edges
 
 
 def markdown_to_mermaid(markdown: str) -> str:
@@ -378,7 +488,45 @@ def markdown_to_mermaid(markdown: str) -> str:
     headings: list[tuple[int, str]] = []
     list_nodes: list[tuple[int, str]] = []
     next_id = 1
-    for line in markdown.splitlines():
+    flow_blocks = {}
+    lines = markdown.splitlines()
+    paragraph_ranges = []
+    paragraph_range = None
+    for token in MarkdownIt().parse(markdown):
+        if token.type == "paragraph_open" and token.level == 0 and token.map:
+            if paragraph_range is None:
+                paragraph_range = [token.map[0], token.map[1]]
+            else:
+                paragraph_range[1] = token.map[1]
+        elif token.level == 0 and token.type != "paragraph_close":
+            if paragraph_range is not None:
+                paragraph_ranges.append(paragraph_range)
+                paragraph_range = None
+        if token.type in {"fence", "code_block"} and token.map:
+            flow = _parse_ascii_flow(token.content)
+            if flow:
+                flow_blocks[token.map[0]] = (token.map[1], flow)
+    if paragraph_range is not None:
+        paragraph_ranges.append(paragraph_range)
+    for start, end in paragraph_ranges:
+        flow = _parse_ascii_flow("\n".join(lines[start:end]))
+        if flow:
+            flow_blocks[start] = (end, flow)
+    skip_until = 0
+    for line_index, line in enumerate(lines):
+        if line_index < skip_until:
+            continue
+        if line_index in flow_blocks:
+            skip_until, (labels, edges) = flow_blocks[line_index]
+            nodes = [f"n{next_id + index}" for index in range(len(labels))]
+            next_id += len(labels)
+            rows.extend(f'  {node}["{_mermaid_label(label)}"]'
+                        for node, label in zip(nodes, labels))
+            parent = headings[-1][1] if headings else "n0"
+            rows.append(f"  {parent} --> {nodes[0]}")
+            rows.extend(f"  {nodes[source]} --> {nodes[target]}" for source, target in edges)
+            list_nodes.clear()
+            continue
         heading = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
         if heading:
             level = len(heading.group(1))
@@ -456,7 +604,11 @@ def validate_mermaid_with_ollama(diagram: str, model: str) -> tuple[str, str | N
         with urlopen(request, timeout=90) as response:
             candidate = json.loads(response.read().decode("utf-8"))["message"]["content"].strip()
         candidate = re.sub(r"^```(?:mermaid)?\s*|\s*```$", "", candidate, flags=re.I)
-        if _valid_mermaid(candidate):
+        node_pattern = r'(n\d+)\["([^\n]*)"\]'
+        edge_pattern = r"(n\d+)\s+-->\s+(n\d+)"
+        same_nodes = set(re.findall(node_pattern, candidate)) == set(re.findall(node_pattern, diagram))
+        same_edges = set(re.findall(edge_pattern, candidate)) == set(re.findall(edge_pattern, diagram))
+        if _valid_mermaid(candidate) and same_nodes and same_edges:
             return candidate, None
         return diagram, "La risposta LLM non ha superato i controlli: uso il diagramma locale."
     except (HTTPError, URLError, TimeoutError, OSError, ValueError, KeyError) as exc:
@@ -513,8 +665,10 @@ def main() -> None:
         div.stButton>button[kind="primary"]{background:#059669!important;border-color:#059669!important;color:#fff!important}
         div.stButton>button[kind="primary"]:hover{background:#047857!important;border-color:#047857!important}
         div.stButton>button:disabled{background:#cbd5e1!important;color:#475569!important}
-        div[data-testid="stDownloadButton"] button{background:#0f172a;color:#fff}
-        div[data-testid="stDownloadButton"] button:hover{background:#1e293b;color:#fff}
+        div[data-testid="stDownloadButton"] button{background:#059669!important;border-color:#059669!important;color:#fff!important}
+        div[data-testid="stDownloadButton"] button:hover{background:#047857!important;border-color:#047857!important;color:#fff!important}
+        div[data-testid="stDownloadButton"] button *,div.stButton>button[kind="primary"]:not(:disabled) *{color:#fff!important}
+        div[data-testid="stDownloadButton"] button:focus-visible{outline:3px solid #047857;outline-offset:2px}
         [data-testid="stAlert"]{border-radius:12px}
         [data-testid="stAlert"] [data-testid="stMarkdownContainer"],
         [data-testid="stAlert"] [data-testid="stMarkdownContainer"] p{color:#334155!important}
@@ -549,7 +703,17 @@ def main() -> None:
         max_upload_size=20,
         help="Formati accettati: .docx e .md · massimo 20 MB.",
     )
+    diagram_scope = st.radio(
+        "Contenuto del diagramma",
+        ["Documento completo", "Solo Diagramma di Flusso"],
+        horizontal=True,
+        key="diagram_scope",
+    )
+    result_key = (uploaded.name, uploaded.getvalue(), diagram_scope) if uploaded else None
+    if st.session_state.get("conversion_input") != result_key:
+        st.session_state.pop("conversion_result", None)
     if st.button("Analizza documento", type="primary", disabled=uploaded is None):
+        st.session_state.pop("conversion_result", None)
         try:
             with st.spinner("Elaborazione in corso…"):
                 content = uploaded.getvalue()
@@ -557,7 +721,10 @@ def main() -> None:
                     markdown = convert_markdown(content)
                     engine = "Markdown caricato"
                 else:
-                    markdown, engine = convert_docx(content, uploaded.name, model)
+                    image_model = model if diagram_scope == "Documento completo" else None
+                    markdown, engine = convert_docx(content, uploaded.name, image_model)
+                if diagram_scope == "Solo Diagramma di Flusso":
+                    markdown = extract_flow_section(markdown)
                 diagram = markdown_to_mermaid(markdown)
                 llm_warning = None
                 if model:
@@ -569,6 +736,7 @@ def main() -> None:
                 "filename": uploaded.name,
                 "llm_warning": llm_warning,
             }
+            st.session_state["conversion_input"] = result_key
         except Exception as exc:
             st.error(f"Elaborazione non riuscita: {exc}")
 

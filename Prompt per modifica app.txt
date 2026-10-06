@@ -1,0 +1,5 @@
+Agisci come un esperto sviluppatore Full-Stack Python ed esperto di interfacce web/UX.
+Aggiungiamo una opzione a questa app.
+Aggiungiamo un tasto per permettere all'utente di scegliere se creare il diagramma come avviene attualmente oppure se creare il diagramma solo del paragrafo chiamato "Diagramma di Flusso".
+L'app funziona bene, applica questa modifica senza danneggiare il resto dell'app.
+Verifica il corretto rendering dell'interfaccia nel browser e testa il flusso di conversione (caricamento, elaborazione, anteprima e download) per assicurarti che non ci siano errori di runtime.
